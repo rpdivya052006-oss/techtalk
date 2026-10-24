@@ -1,38 +1,36 @@
 
-import streamlit as st
-import requests
-import os
 import io
-from PIL import Image
+import os
+import requests
+import streamlit as st
 import pytesseract
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
+from PIL import Image
+from fpdf import FPDF
+
+# ---------------- PAGE SETTINGS ----------------
 st.set_page_config(
-    page_title="Rural ACT - Simple Tamil",
-    page_icon="📖",
+    page_title="Ancient Tamil to Simple Tamil",
+    page_icon="📚",
     layout="wide"
 )
 
-st.title("📖 Rural ACT – Simple Tamil Converter")
-st.write("Convert difficult Tamil passages into very simple modern Tamil.")
-
-st.info(
-    "Paste Tamil text or upload a Tamil image. "
-    "Get a simple explanation and download it as a PDF."
+st.title("📚 Ancient Tamil to Simple Modern Tamil")
+st.write(
+    "Enter difficult Tamil text or upload an image. "
+    "The app will rewrite it in simple, natural modern Tamil."
 )
 
-# API configuration
-api_key = st.secrets.get("SARVAM_API_KEY", os.getenv("SARVAM_API_KEY", ""))
-
+# ---------------- SARVAM API ----------------
 def simplify_tamil(text):
-    if not api_key:
-        st.error("Please add SARVAM_API_KEY in Streamlit Secrets.")
-        return ""
+    api_key = st.secrets.get("SARVAM_API_KEY", "")
 
-    url = "https://api.sarvam.ai/translate"
+    if not api_key:
+        raise ValueError(
+            "SARVAM_API_KEY is missing. Add it in Streamlit Secrets."
+        )
+
+    url = "https://api.sarvam.ai/v1/chat/completions"
 
     headers = {
         "api-subscription-key": api_key,
@@ -40,162 +38,210 @@ def simplify_tamil(text):
     }
 
     payload = {
-        "input": text,
-        "source_language_code": "ta-IN",
-        "target_language_code": "ta-IN",
-        "mode": "formal",
-        "model": "mayura:v1",
-        "enable_preprocessing": True
+        "model": "sarvam-105b",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert Tamil language simplifier. "
+                    "Rewrite the user's Tamil text in very simple, "
+                    "natural, modern Tamil that ordinary people can "
+                    "understand easily. Preserve the original meaning "
+                    "and important facts. Explain difficult classical "
+                    "words using simple Tamil where needed. Do not use "
+                    "English or Tanglish. Do not add unrelated details. "
+                    "Return only the simplified Tamil text."
+                )
+            },
+            {
+                "role": "user",
+                "content": text
+            }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 4000
     }
 
-    try:
-        response = requests.post(
-            url, headers=headers, json=payload, timeout=60
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=120
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Sarvam API error ({response.status_code}): "
+            f"{response.text[:500]}"
         )
-        response.raise_for_status()
-        result = response.json()
-        return result.get("translated_text", "")
 
+    data = response.json()
+    result = data["choices"][0]["message"]["content"].strip()
+
+    if not result:
+        raise ValueError(
+            "Sarvam returned an empty response. Please try again."
+        )
+
+    return result
+
+
+# ---------------- IMAGE OCR ----------------
+def extract_tamil_from_image(image):
+    try:
+        return pytesseract.image_to_string(
+            image,
+            lang="tam+eng"
+        ).strip()
     except Exception as e:
-        st.error(f"Text processing failed: {e}")
-        return ""
+        raise RuntimeError(
+            "Could not read the image. Check that Tamil OCR "
+            "is installed and try a clearer image."
+        ) from e
 
-# Input methods
-st.subheader("1. Enter or upload Tamil content")
 
-input_method = st.radio(
-    "Choose input method",
-    ["Type or paste text", "Upload an image"],
-    horizontal=True
+# ---------------- PDF DOWNLOAD ----------------
+def create_pdf(original, simplified):
+    font_path = "NotoSansTamil-Regular.ttf"
+
+    if not os.path.exists(font_path):
+        raise FileNotFoundError(
+            "Add NotoSansTamil-Regular.ttf to your GitHub "
+            "repository beside app.py to create a Tamil PDF."
+        )
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.add_font("Tamil", fname=font_path)
+    pdf.set_font("Tamil", size=12)
+
+    # Enable Tamil text shaping if supported by the installed package
+    try:
+        pdf.set_text_shaping()
+    except Exception:
+        pass
+
+    pdf.set_font("Tamil", size=16)
+    pdf.multi_cell(0, 10, "எளிய தமிழ் விளக்கம்")
+    pdf.ln(4)
+
+    pdf.set_font("Tamil", size=12)
+    pdf.multi_cell(0, 8, "அசல் உரை:")
+    pdf.multi_cell(0, 8, original)
+    pdf.ln(4)
+
+    pdf.multi_cell(0, 8, "எளிய நவீன தமிழ்:")
+    pdf.multi_cell(0, 8, simplified)
+
+    output = pdf.output()
+    return bytes(output)
+
+
+# ---------------- INPUT OPTIONS ----------------
+st.subheader("1. Enter Tamil text")
+
+entered_text = st.text_area(
+    "Paste an ancient Tamil poem, book passage, newspaper paragraph, "
+    "or other difficult Tamil text:",
+    height=220,
+    placeholder="இங்கே உங்கள் தமிழ் உரையை உள்ளிடவும்..."
 )
 
-original_text = ""
+st.subheader("2. Or upload an image")
 
-if input_method == "Type or paste text":
-    original_text = st.text_area(
-        "Enter Tamil paragraph",
-        height=200,
-        placeholder="இங்கே தமிழ் பத்தியை உள்ளிடவும்..."
+uploaded_image = st.file_uploader(
+    "Upload a clear image containing Tamil text",
+    type=["png", "jpg", "jpeg"]
+)
+
+if uploaded_image:
+    image = Image.open(uploaded_image).convert("RGB")
+    st.image(image, caption="Uploaded image", use_container_width=True)
+
+    if st.button("Extract Tamil text from image"):
+        with st.spinner("Reading the image..."):
+            try:
+                extracted = extract_tamil_from_image(image)
+                if extracted:
+                    st.session_state["extracted_text"] = extracted
+                    st.success("Text extracted. You can review it below.")
+                else:
+                    st.warning(
+                        "No text was detected. Try a clearer image."
+                    )
+            except Exception as e:
+                st.error(str(e))
+
+if "extracted_text" in st.session_state:
+    st.text_area(
+        "Extracted text — review and copy it into the input box above:",
+        value=st.session_state["extracted_text"],
+        height=150
     )
 
-else:
-    uploaded_image = st.file_uploader(
-        "Upload a Tamil newspaper or book image",
-        type=["png", "jpg", "jpeg"]
-    )
+# ---------------- SIMPLIFICATION ----------------
+st.subheader("3. Simplify the text")
 
-    if uploaded_image:
-        image = Image.open(uploaded_image)
-        st.image(image, caption="Uploaded image", width=400)
-
-        try:
-            original_text = pytesseract.image_to_string(
-                image, lang="tam+eng"
-            )
-            st.subheader("Extracted text")
-            original_text = st.text_area(
-                "Check and correct the extracted Tamil text",
-                value=original_text,
-                height=200
-            )
-        except Exception as e:
-            st.error(
-                "Image text extraction failed. "
-                "Check the OCR installation and Tamil language data."
-            )
-
-# Simplification
 if st.button("✨ Convert to Simple Tamil", type="primary"):
-    if not original_text.strip():
-        st.warning("Please enter text or upload an image.")
+    text_to_process = entered_text.strip()
+
+    if not text_to_process:
+        st.warning(
+            "Please enter the Tamil text in the text box above."
+        )
     else:
-        with st.spinner("Converting to simple Tamil..."):
-            simplified_text = simplify_tamil(original_text)
+        with st.spinner("Converting to simple modern Tamil..."):
+            try:
+                simplified = simplify_tamil(text_to_process)
+                st.session_state["original_text"] = text_to_process
+                st.session_state["simple_text"] = simplified
+            except Exception as e:
+                st.error(f"Conversion failed: {e}")
 
-        if simplified_text:
-            st.session_state["original"] = original_text
-            st.session_state["simplified"] = simplified_text
-
-# Display comparison
-if "simplified" in st.session_state:
-    st.subheader("2. Original vs. Simple Tamil")
+# ---------------- SIDE-BY-SIDE COMPARISON ----------------
+if (
+    st.session_state.get("original_text")
+    and st.session_state.get("simple_text")
+):
+    st.subheader("4. Original vs Simple Tamil")
 
     left, right = st.columns(2)
 
     with left:
-        st.markdown("### Original Tamil")
+        st.markdown("### 📜 Original text")
         st.text_area(
-            "Original text",
-            value=st.session_state["original"],
+            "Original",
+            value=st.session_state["original_text"],
             height=300,
             disabled=True,
-            key="original_display"
+            label_visibility="collapsed"
         )
 
     with right:
-        st.markdown("### Simple Modern Tamil")
+        st.markdown("### 🌱 Simple modern Tamil")
         st.text_area(
-            "Simplified text",
-            value=st.session_state["simplified"],
+            "Simplified",
+            value=st.session_state["simple_text"],
             height=300,
             disabled=True,
-            key="simple_display"
+            label_visibility="collapsed"
         )
 
-    # PDF download
-    st.subheader("3. Download your result")
+    st.subheader("5. Download the result")
 
-    st.caption(
-        "For correct Tamil characters in the PDF, "
-        "a Unicode Tamil font must be installed and registered."
-    )
-
-    font_path = "NotoSansTamil-Regular.ttf"
-
-    if os.path.exists(font_path):
-        pdfmetrics.registerFont(TTFont("TamilFont", font_path))
-
-        buffer = io.BytesIO()
-        pdf = canvas.Canvas(buffer, pagesize=A4)
-        pdf.setFont("TamilFont", 12)
-
-        width, height = A4
-        y = height - 50
-
-        for heading, content in [
-            ("Original Tamil", st.session_state["original"]),
-            ("Simple Modern Tamil", st.session_state["simplified"])
-        ]:
-            if y < 80:
-                pdf.showPage()
-                pdf.setFont("TamilFont", 12)
-                y = height - 50
-
-            pdf.drawString(40, y, heading)
-            y -= 25
-
-            for line in content.splitlines():
-                if y < 50:
-                    pdf.showPage()
-                    pdf.setFont("TamilFont", 12)
-                    y = height - 50
-
-                pdf.drawString(40, y, line[:90])
-                y -= 20
-
-            y -= 30
-
-        pdf.save()
-        buffer.seek(0)
+    try:
+        pdf_bytes = create_pdf(
+            st.session_state["original_text"],
+            st.session_state["simple_text"]
+        )
 
         st.download_button(
-            "📄 Download PDF",
-            data=buffer.getvalue(),
-            file_name="Rural_ACT_Simple_Tamil.pdf",
+            label="📄 Download comparison as PDF",
+            data=pdf_bytes,
+            file_name="simple_tamil_comparison.pdf",
             mime="application/pdf"
         )
-    else:
-        st.warning(
-            "Add NotoSansTamil-Regular.ttf to your app folder "
-            "to enable Tamil PDF downloads."
-        )
+    except Exception as e:
+        st.warning(str(e))
+
