@@ -7,6 +7,7 @@ import pytesseract
 
 from PIL import Image
 from pypdf import PdfReader
+from docx import Document
 
 
 # =====================================================
@@ -19,11 +20,6 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# =====================================================
-# APP TITLE
-# =====================================================
-
 st.title("📚 Ancient Tamil & Poem Learning Assistant")
 
 st.markdown(
@@ -32,14 +28,15 @@ st.markdown(
 
     - 📝 Tamil text simplification
     - 📄 PDF and image text extraction
-    - 📜 Tamil poem simplification
-    - 📖 Easy explanations and difficult-word meanings
+    - 🗂️ Word document support
+    - 📜 Tamil poem learning
+    - 📖 Student-friendly explanations
     """
 )
 
 
 # =====================================================
-# SARVAM AI CONFIGURATION
+# SARVAM AI
 # =====================================================
 
 API_URL = "https://api.sarvam.ai/v1/chat/completions"
@@ -59,8 +56,8 @@ def call_sarvam(prompt, max_tokens=3500):
 
     if not api_key:
         raise RuntimeError(
-            "SARVAM_API_KEY is missing. "
-            "Add it in Streamlit Cloud → Settings → Secrets."
+            "SARVAM_API_KEY is missing. Add it in "
+            "Streamlit Cloud → Settings → Secrets."
         )
 
     headers = {
@@ -75,10 +72,10 @@ def call_sarvam(prompt, max_tokens=3500):
                 "role": "system",
                 "content": (
                     "You are an expert Tamil language teacher. "
-                    "Explain Tamil text accurately in clear, natural "
+                    "Explain Tamil accurately in natural, simple "
                     "modern Tamil. Preserve the original meaning. "
-                    "Do not invent poem lines or facts. "
-                    "Use simple Tamil that students can understand."
+                    "Do not invent poem lines or historical facts. "
+                    "Use language students can understand."
                 )
             },
             {
@@ -98,10 +95,12 @@ def call_sarvam(prompt, max_tokens=3500):
             json=payload,
             timeout=120
         )
+
     except requests.exceptions.Timeout:
         raise RuntimeError(
             "Sarvam took too long to respond. Please try again."
         )
+
     except requests.exceptions.RequestException as error:
         raise RuntimeError(
             f"Could not connect to Sarvam AI: {error}"
@@ -122,6 +121,7 @@ def call_sarvam(prompt, max_tokens=3500):
                 or data.get("message")
                 or str(data)
             )
+
         except Exception:
             error_message = response.text[:500]
 
@@ -133,9 +133,7 @@ def call_sarvam(prompt, max_tokens=3500):
     try:
         data = response.json()
     except ValueError:
-        raise RuntimeError(
-            "Sarvam returned an invalid response."
-        )
+        raise RuntimeError("Sarvam returned an invalid response.")
 
     choices = data.get("choices") or []
 
@@ -152,30 +150,25 @@ def call_sarvam(prompt, max_tokens=3500):
         result = content.strip()
 
     elif isinstance(content, list):
-        text_parts = []
-
-        for part in content:
-            if isinstance(part, dict) and part.get("text"):
-                text_parts.append(str(part["text"]))
-
-        result = "\n".join(text_parts).strip()
+        result = "\n".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("text")
+        ).strip()
 
     else:
         result = ""
 
     if not result:
-        finish_reason = choice.get("finish_reason", "unknown")
-
         raise RuntimeError(
-            "Sarvam returned no visible text. "
-            f"Finish reason: {finish_reason}. Please try again."
+            "Sarvam returned no visible text. Please try again."
         )
 
     return result
 
 
 # =====================================================
-# SPLIT LONG TEXT INTO SMALLER PARTS
+# LONG TEXT PROCESSING
 # =====================================================
 
 def split_into_chunks(text, max_chars=1800):
@@ -203,26 +196,21 @@ def split_into_chunks(text, max_chars=1800):
                 chunks.append(current.strip())
                 current = ""
 
-            cut_position = paragraph.rfind(" ", 0, max_chars)
+            cut = paragraph.rfind(" ", 0, max_chars)
 
-            if cut_position < max_chars // 2:
-                cut_position = max_chars
+            if cut < max_chars // 2:
+                cut = max_chars
 
-            chunks.append(
-                paragraph[:cut_position].strip()
-            )
-
-            paragraph = paragraph[cut_position:].strip()
+            chunks.append(paragraph[:cut].strip())
+            paragraph = paragraph[cut:].strip()
 
         if not paragraph:
             continue
 
         if len(current) + len(paragraph) + 1 <= max_chars:
-
             current = f"{current}\n{paragraph}".strip()
 
         else:
-
             if current:
                 chunks.append(current.strip())
 
@@ -234,20 +222,14 @@ def split_into_chunks(text, max_chars=1800):
     return chunks
 
 
-# =====================================================
-# SIMPLIFY LONG TAMIL TEXT
-# =====================================================
-
 def simplify_long_text(text):
 
     chunks = split_into_chunks(text)
 
     if not chunks:
-        raise RuntimeError(
-            "Please enter or upload some Tamil text."
-        )
+        raise RuntimeError("Please provide some Tamil text.")
 
-    simplified_chunks = []
+    results = []
 
     progress = st.progress(0)
     status = st.empty()
@@ -255,117 +237,157 @@ def simplify_long_text(text):
     for index, chunk in enumerate(chunks, start=1):
 
         status.write(
-            f"Processing part {index} of {len(chunks)}..."
+            f"Simplifying part {index} of {len(chunks)}..."
         )
 
         prompt = f"""
-Convert the following Tamil passage into simple, natural,
+Rewrite the following Tamil passage in simple, natural,
 modern Tamil that school students can understand.
 
-Instructions:
-1. Preserve the original meaning and important information.
-2. Write the answer in Tamil script.
-3. Do not use Tanglish or Roman letters to write Tamil.
-4. Do not translate the answer into English.
-5. Do not shorten the passage unnecessarily.
-6. Do not invent facts or add unrelated information.
-7. Explain difficult and old-fashioned expressions using
-   appropriate modern Tamil.
-8. Return only the simplified Tamil passage.
+Rules:
+1. Preserve the original meaning.
+2. Write in Tamil script only.
+3. Do not use Tanglish.
+4. Do not translate into English.
+5. Do not invent facts.
+6. Explain difficult or old-fashioned expressions clearly.
+7. Do not shorten unnecessarily.
+8. Return only the simplified Tamil text.
 
 Original Tamil passage:
 
 {chunk}
 """
 
-        answer = call_sarvam(
-            prompt,
-            max_tokens=3500
+        results.append(
+            call_sarvam(prompt, max_tokens=3500)
         )
-
-        simplified_chunks.append(answer)
 
         progress.progress(index / len(chunks))
 
     status.success("Tamil simplification completed!")
 
-    return "\n\n".join(simplified_chunks)
+    return "\n\n".join(results)
 
 
 # =====================================================
-# EXTRACT TEXT FROM IMAGES
+# FILE TEXT EXTRACTION
 # =====================================================
 
 def extract_text_from_image(uploaded_file):
 
-    image_bytes = uploaded_file.getvalue()
-
     image = Image.open(
-        io.BytesIO(image_bytes)
+        io.BytesIO(uploaded_file.getvalue())
     ).convert("RGB")
 
     try:
-        extracted_text = pytesseract.image_to_string(
+        text = pytesseract.image_to_string(
             image,
             lang="tam+eng"
         )
 
     except Exception as error:
         raise RuntimeError(
-            "Tamil OCR failed. Check packages.txt and ensure "
-            "Tamil Tesseract language support is installed. "
+            "Image OCR failed. Check packages.txt and make "
+            "sure Tamil Tesseract support is installed. "
             f"Details: {error}"
         )
 
-    if not extracted_text.strip():
+    if not text.strip():
         raise RuntimeError(
-            "No text was detected. Please upload a clearer image."
+            "No text detected. Try a clearer image."
         )
 
-    return extracted_text.strip()
+    return text.strip()
 
-
-# =====================================================
-# EXTRACT TEXT FROM PDF
-# =====================================================
 
 def extract_text_from_pdf(uploaded_file):
 
-    pdf_bytes = io.BytesIO(
-        uploaded_file.getvalue()
-    )
-
     try:
-        reader = PdfReader(pdf_bytes)
+        reader = PdfReader(
+            io.BytesIO(uploaded_file.getvalue())
+        )
 
-        page_texts = []
+        pages = [
+            page.extract_text() or ""
+            for page in reader.pages
+        ]
 
-        for page in reader.pages:
-            page_texts.append(
-                page.extract_text() or ""
-            )
-
-        extracted_text = "\n\n".join(
-            page_texts
-        ).strip()
+        text = "\n\n".join(pages).strip()
 
     except Exception as error:
         raise RuntimeError(
             f"Could not read the PDF: {error}"
         )
 
-    if not extracted_text:
+    if not text:
         raise RuntimeError(
             "No selectable text was found in this PDF. "
-            "If it is a scanned PDF, save its page as an image "
-            "and upload the JPG or PNG instead."
+            "It may be a scanned PDF. Upload the page as "
+            "a JPG or PNG image instead."
         )
 
-    return extracted_text
+    return text
+
+
+def extract_text_from_word(uploaded_file):
+
+    try:
+        document = Document(
+            io.BytesIO(uploaded_file.getvalue())
+        )
+
+        paragraphs = [
+            paragraph.text
+            for paragraph in document.paragraphs
+            if paragraph.text.strip()
+        ]
+
+        # Also extract text from tables in the document.
+        for table in document.tables:
+            for row in table.rows:
+                row_text = " | ".join(
+                    cell.text.strip()
+                    for cell in row.cells
+                    if cell.text.strip()
+                )
+
+                if row_text:
+                    paragraphs.append(row_text)
+
+        text = "\n".join(paragraphs).strip()
+
+    except Exception as error:
+        raise RuntimeError(
+            f"Could not read the Word document: {error}"
+        )
+
+    if not text:
+        raise RuntimeError(
+            "No text was found in this Word document."
+        )
+
+    return text
+
+
+def extract_uploaded_file(uploaded_file):
+
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".pdf"):
+        return extract_text_from_pdf(uploaded_file)
+
+    if name.endswith(".docx"):
+        return extract_text_from_word(uploaded_file)
+
+    if name.endswith((".jpg", ".jpeg", ".png")):
+        return extract_text_from_image(uploaded_file)
+
+    raise RuntimeError("This file type is not supported.")
 
 
 # =====================================================
-# NAVIGATION TABS
+# MAIN TABS
 # =====================================================
 
 text_tab, poem_tab = st.tabs([
@@ -375,26 +397,20 @@ text_tab, poem_tab = st.tabs([
 
 
 # =====================================================
-# TAB 1: TAMIL TEXT SIMPLIFIER
+# TAB 1: TEXT SIMPLIFIER
 # =====================================================
 
 with text_tab:
 
-    st.header(
-        "📝 Convert Difficult Tamil into Simple Tamil"
-    )
+    st.header("📝 Tamil Text Simplifier")
 
     st.write(
-        "Type or paste Tamil text, or upload a PDF or image. "
-        "The app extracts the text and simplifies it for students."
+        "Enter Tamil text or upload a PDF or image."
     )
 
     input_method = st.radio(
-        "Choose your input method:",
-        [
-            "Type or paste text",
-            "Upload PDF or image"
-        ],
+        "Choose input method:",
+        ["Type or paste text", "Upload PDF or image"],
         horizontal=True,
         key="text_input_method"
     )
@@ -404,7 +420,7 @@ with text_tab:
     if input_method == "Type or paste text":
 
         original_text = st.text_area(
-            "Enter your Tamil text:",
+            "Enter Tamil text:",
             height=250,
             placeholder="இங்கே தமிழ் உரையை உள்ளிடவும்...",
             key="manual_tamil_text"
@@ -420,28 +436,15 @@ with text_tab:
 
         if uploaded_file is not None:
 
-            file_name = uploaded_file.name.lower()
-
             try:
-
-                if file_name.endswith(".pdf"):
-
-                    original_text = extract_text_from_pdf(
-                        uploaded_file
-                    )
-
-                else:
-
-                    original_text = extract_text_from_image(
-                        uploaded_file
-                    )
-
-                st.success(
-                    "Text extracted successfully!"
+                original_text = extract_uploaded_file(
+                    uploaded_file
                 )
 
+                st.success("Text extracted successfully!")
+
                 st.text_area(
-                    "Extracted original text:",
+                    "Extracted text:",
                     value=original_text,
                     height=250,
                     key="extracted_text_preview"
@@ -458,32 +461,20 @@ with text_tab:
 
         if not original_text.strip():
 
-            st.warning(
-                "Please enter Tamil text or upload a file."
-            )
+            st.warning("Please enter text or upload a file.")
 
         else:
 
             try:
-
                 with st.spinner(
                     "Converting into simple modern Tamil..."
                 ):
+                    simplified = simplify_long_text(original_text)
 
-                    simplified_text = simplify_long_text(
-                        original_text
-                    )
+                left, right = st.columns(2)
 
-                st.subheader(
-                    "📖 Original and Simplified Tamil"
-                )
-
-                original_column, simplified_column = st.columns(2)
-
-                with original_column:
-
-                    st.markdown("#### Original Tamil")
-
+                with left:
+                    st.subheader("Original Tamil")
                     st.text_area(
                         "Original text",
                         value=original_text,
@@ -491,13 +482,11 @@ with text_tab:
                         key="original_result"
                     )
 
-                with simplified_column:
-
-                    st.markdown("#### Simple Modern Tamil")
-
+                with right:
+                    st.subheader("Simple Modern Tamil")
                     st.text_area(
                         "Simplified text",
-                        value=simplified_text,
+                        value=simplified,
                         height=400,
                         key="simplified_result"
                     )
@@ -515,34 +504,72 @@ with poem_tab:
     st.header("📜 Tamil Poem Learning")
 
     st.write(
-        "Paste any Tamil poem to understand its meaning "
-        "in simple modern Tamil."
+        "Type a poem or upload its PDF, Word document, "
+        "or image. The app will explain it for students."
     )
 
     poem_title = st.text_input(
         "Poem title (optional):",
-        placeholder="Enter the poem title",
-        key="custom_poem_title"
+        placeholder="Enter poem title",
+        key="poem_title"
     )
 
     poem_author = st.text_input(
         "Poet name (optional):",
-        placeholder="Enter the poet's name",
-        key="custom_poem_author"
+        placeholder="Enter poet name",
+        key="poem_author"
     )
 
-    poem_text = st.text_area(
-        "Paste your Tamil poem:",
-        height=250,
-        placeholder=(
-            "இங்கே முழுத் தமிழ்ப் பாடலையும் உள்ளிடவும்..."
-        ),
-        key="custom_poem_text"
+    poem_input_method = st.radio(
+        "Choose how to provide the poem:",
+        ["Type or paste poem", "Upload poem file"],
+        horizontal=True,
+        key="poem_input_method"
     )
 
-    st.caption(
-        "Tip: Paste the complete poem for a more useful explanation."
-    )
+    poem_text = ""
+
+    if poem_input_method == "Type or paste poem":
+
+        poem_text = st.text_area(
+            "Enter your Tamil poem:",
+            height=250,
+            placeholder="இங்கே தமிழ்ப் பாடலை உள்ளிடவும்...",
+            key="manual_poem_text"
+        )
+
+    else:
+
+        poem_file = st.file_uploader(
+            "Upload poem file",
+            type=["pdf", "docx", "jpg", "jpeg", "png"],
+            help=(
+                "Supported formats: PDF, DOCX, JPG, JPEG, PNG. "
+                "Scanned PDFs are not supported directly; "
+                "upload their pages as images."
+            ),
+            key="poem_file_upload"
+        )
+
+        if poem_file is not None:
+
+            try:
+                poem_text = extract_uploaded_file(poem_file)
+
+                st.success("Poem text extracted successfully!")
+
+                st.markdown("#### Check the extracted poem")
+
+                # Allow correction of OCR or extraction mistakes.
+                poem_text = st.text_area(
+                    "Review and correct the poem if necessary:",
+                    value=poem_text,
+                    height=250,
+                    key="reviewed_poem_text"
+                )
+
+            except Exception as error:
+                st.error(str(error))
 
     if st.button(
         "📚 Explain Poem in Simple Tamil",
@@ -553,77 +580,63 @@ with poem_tab:
         if not poem_text.strip():
 
             st.warning(
-                "Please paste a Tamil poem first."
+                "Please enter a poem or upload a poem file."
             )
 
         else:
 
             try:
 
-                poem_prompt = f"""
+                prompt = f"""
 You are a Tamil literature teacher helping school students.
 
-Explain the following poem in simple, natural modern Tamil.
+Explain the supplied poem in simple, natural modern Tamil.
 
-Poem title: {poem_title or "Not provided"}
+Title: {poem_title or "Not provided"}
 Poet: {poem_author or "Not provided"}
 
 ORIGINAL POEM:
 {poem_text}
 
-Give the answer under these headings:
+Use these headings in your response:
 
 ### 1. எளிய நவீன தமிழ்
-
-Rewrite the poem's meaning in simple modern Tamil.
-Preserve the original ideas and important details.
-Do not invent new poem lines.
+Rewrite the poem's meaning in easy modern Tamil.
+Preserve its original meaning. Do not invent poem lines.
 
 ### 2. பாடலின் மொத்தப் பொருள்
-
-Explain the central meaning of the poem in easy Tamil.
-Explain what the poet wants readers to understand.
+Explain the overall meaning and what the poet wants
+readers to understand.
 
 ### 3. கடினமான சொற்களின் பொருள்
-
-List important difficult words that actually appear
-in the supplied poem.
-
-Explain each word in simple Tamil using bullet points.
-Use the meaning that best fits the poem's context.
+List important difficult words actually present in
+the supplied poem and explain them in simple Tamil.
+Use bullet points.
 
 ### 4. மாணவர்கள் கற்றுக்கொள்ள வேண்டியது
-
-Give 2 to 4 short points about the lesson or message
-students can learn from this poem.
+Give 2 to 4 points about the lesson or message.
 
 ### 5. சிறிய சுருக்கம்
+Give a short, easy-to-remember summary.
 
-Give a short, easy-to-remember summary in Tamil.
-
-IMPORTANT RULES:
-- Write the entire answer in Tamil script.
+Important rules:
+- Write the answer in Tamil script.
 - Do not use Tanglish.
-- Do not translate the answer into English.
-- Preserve the poem's intended meaning.
+- Do not translate into English.
 - Do not invent missing poem lines or historical facts.
-- If the poem is incomplete or its meaning is uncertain,
-  clearly mention that limitation.
+- If the poem is incomplete or ambiguous, say so.
 - Keep the explanation suitable for students.
 """
 
                 with st.spinner(
                     "Preparing the poem explanation..."
                 ):
-
-                    poem_explanation = call_sarvam(
-                        poem_prompt,
+                    explanation = call_sarvam(
+                        prompt,
                         max_tokens=3500
                     )
 
-                st.success(
-                    "Poem explanation is ready!"
-                )
+                st.success("Poem explanation is ready!")
 
                 st.markdown("## 📜 Original Poem")
 
@@ -634,17 +647,15 @@ IMPORTANT RULES:
                     st.caption(f"Poet: {poem_author}")
 
                 st.text_area(
-                    "Original poem text",
+                    "Final poem text",
                     value=poem_text,
                     height=200,
-                    key="poem_original_result"
+                    key="final_poem_display"
                 )
 
-                st.markdown(
-                    "## 🎓 Student-Friendly Explanation"
-                )
+                st.markdown("## 🎓 Student-Friendly Explanation")
 
-                st.markdown(poem_explanation)
+                st.markdown(explanation)
 
             except Exception as error:
                 st.error(str(error))
@@ -658,11 +669,9 @@ st.markdown("---")
 
 st.caption(
     "Tamil Learning Assistant | Powered by Sarvam AI | "
-    "For educational use. Check literary interpretations "
-    "against your textbook or a trusted Tamil literature source."
+    "For educational use. Verify poem text and interpretations "
+    "with a trusted textbook or Tamil literature source."
 )
-
-
 
 
 
