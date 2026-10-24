@@ -1,4 +1,6 @@
 
+import io
+import re
 import requests
 import streamlit as st
 import pytesseract
@@ -7,44 +9,62 @@ from PIL import Image
 from pypdf import PdfReader
 
 
-# ==================================================
-# 1. PAGE CONFIGURATION
-# ==================================================
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
+
 st.set_page_config(
-    page_title="Ancient Tamil to Simple Tamil",
+    page_title="Tamil Learning Assistant",
     page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-st.title("📚 Ancient Tamil to Simple Modern Tamil")
+
+# =========================================================
+# APP TITLE
+# =========================================================
+
+st.title("📚 Ancient Tamil & Poem Learning Assistant")
 
 st.markdown(
     """
-    Convert difficult Tamil literature, classical Tamil, book passages,
-    and newspaper text into **simple, natural modern Tamil**.
+    **Understand difficult Tamil in simple modern Tamil.**
 
-    **Features:** Tamil text input • PDF upload • Image OCR •
-    Original vs Simple Tamil comparison
+    ✨ Tamil text simplification  
+    📄 PDF and image text extraction  
+    📜 Tamil poem learning  
+    📖 Easy explanations and difficult-word meanings
     """
 )
 
-st.divider()
+
+# =========================================================
+# SARVAM API SETTINGS
+# =========================================================
+
+API_URL = "https://api.sarvam.ai/v1/chat/completions"
+MODEL_NAME = "sarvam-105b"
 
 
-# ==================================================
-# 2. SARVAM AI API
-# ==================================================
-def simplify_chunk(text):
-    api_key = st.secrets.get("SARVAM_API_KEY", "")
+def get_api_key():
+    """Read the API key securely from Streamlit Secrets."""
+
+    try:
+        return st.secrets["SARVAM_API_KEY"]
+    except Exception:
+        return ""
+
+
+def call_sarvam(prompt, max_tokens=3500):
+    """Send a prompt to Sarvam AI and return its text response."""
+
+    api_key = get_api_key()
 
     if not api_key:
         raise RuntimeError(
-            "SARVAM_API_KEY is missing. Add your API key "
-            "under Streamlit Cloud → Settings → Secrets."
+            "SARVAM_API_KEY is missing. "
+            "Add it in Streamlit Cloud → Settings → Secrets."
         )
-
-    url = "https://api.sarvam.ai/v1/chat/completions"
 
     headers = {
         "api-subscription-key": api_key,
@@ -52,420 +72,634 @@ def simplify_chunk(text):
     }
 
     payload = {
-        "model": "sarvam-105b",
+        "model": MODEL_NAME,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are an expert Tamil language simplifier. "
-                    "Your task is to rewrite difficult, classical, or "
-                    "formal Tamil into simple, natural modern Tamil. "
-                    "Rewrite the COMPLETE passage. Do not summarize it. "
-                    "Do not omit sentences, facts, events, names, or "
-                    "important details. Explain difficult Tamil words "
-                    "using simpler Tamil expressions when necessary. "
-                    "Preserve the original meaning and tone. "
-                    "Use Tamil script, not Tanglish. "
-                    "Do not translate the passage into English. "
-                    "Return only the simplified Tamil passage."
+                    "You are an expert Tamil language teacher. "
+                    "Explain Tamil literature accurately in clear, "
+                    "natural Tamil. Preserve the original meaning. "
+                    "Do not invent lines from poems. "
+                    "Use simple Tamil that school students can understand."
                 )
             },
             {
                 "role": "user",
-                "content": (
-                    "Rewrite every sentence in the following passage "
-                    "in simple modern Tamil. Keep every important detail. "
-                    "Do not stop after the first sentence.\n\n"
-                    + text
-                )
+                "content": prompt
             }
         ],
-        "temperature": 0.2,
-        "max_tokens": 4000,
-        "reasoning_effort": None
+        "reasoning_effort": None,
+        "max_tokens": max_tokens,
+        "temperature": 0.2
     }
 
     try:
         response = requests.post(
-            url,
+            API_URL,
             headers=headers,
             json=payload,
-            timeout=180
+            timeout=120
         )
-
-    except requests.RequestException as error:
+    except requests.exceptions.Timeout:
+        raise RuntimeError(
+            "Sarvam took too long to respond. Please try again."
+        )
+    except requests.exceptions.RequestException as error:
         raise RuntimeError(
             f"Could not connect to Sarvam AI: {error}"
-        ) from error
+        )
 
     if not response.ok:
+        try:
+            error_data = response.json()
+            error_message = (
+                error_data.get("error", {}).get("message")
+                or error_data.get("message")
+                or str(error_data)
+            )
+        except Exception:
+            error_message = response.text[:500]
+
         raise RuntimeError(
-            f"Sarvam API returned HTTP {response.status_code}.\n"
-            f"Details: {response.text[:1000]}"
+            f"Sarvam API error ({response.status_code}): "
+            f"{error_message}"
         )
 
     try:
         data = response.json()
-
-    except ValueError as error:
-        raise RuntimeError(
-            "Sarvam returned an invalid JSON response."
-        ) from error
+    except ValueError:
+        raise RuntimeError("Sarvam returned an invalid response.")
 
     choices = data.get("choices") or []
 
     if not choices:
         raise RuntimeError(
-            "Sarvam returned no choices.\n"
-            f"Response: {str(data)[:1500]}"
+            "Sarvam did not return an answer. Please try again."
         )
 
     choice = choices[0] or {}
     message = choice.get("message") or {}
     content = message.get("content")
 
-    # Handle normal string responses.
     if isinstance(content, str):
         result = content.strip()
 
-    # Handle responses containing multiple text blocks.
     elif isinstance(content, list):
-        parts = []
+        text_parts = []
 
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
+        for part in content:
+            if isinstance(part, dict) and part.get("text"):
+                text_parts.append(str(part["text"]))
 
-            elif isinstance(item, dict):
-                item_text = item.get("text")
-
-                if isinstance(item_text, str):
-                    parts.append(item_text)
-
-        result = "\n".join(parts).strip()
+        result = "\n".join(text_parts).strip()
 
     else:
         result = ""
 
-    # Handle missing or empty output safely.
     if not result:
-        finish_reason = choice.get("finish_reason")
-        reasoning = message.get("reasoning_content")
-
-        details = (
-            f"Finish reason: {finish_reason}. "
-            f"Reasoning content present: {bool(reasoning)}."
-        )
+        finish_reason = choice.get("finish_reason", "unknown")
 
         raise RuntimeError(
-            "Sarvam did not return visible text. "
-            + details
-            + " Please check the API response and try again."
+            "Sarvam returned no visible text. "
+            f"Finish reason: {finish_reason}. Please try again."
         )
 
     return result
 
 
-# ==================================================
-# 3. SPLIT LONG TEXT INTO SMALLER PARTS
-# ==================================================
-def split_text(text, max_chars=1800):
+# =========================================================
+# LONG TEXT PROCESSING
+# =========================================================
+
+def split_into_chunks(text, max_chars=1800):
     """
-    Split a long passage at word boundaries.
-    This helps prevent individual API responses from becoming too long.
+    Split long passages into smaller chunks.
+    Prefer splitting at sentence or line boundaries.
     """
 
-    words = text.split()
+    text = text.strip()
+
+    if not text:
+        return []
+
     chunks = []
-    current_words = []
-    current_length = 0
+    current = ""
 
-    for word in words:
-        extra_length = len(word) + 1
+    paragraphs = re.split(r"(?<=[.!?。])\s+|\n+", text)
 
-        if current_words and current_length + extra_length > max_chars:
-            chunks.append(" ".join(current_words))
-            current_words = [word]
-            current_length = len(word)
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
 
+        if not paragraph:
+            continue
+
+        while len(paragraph) > max_chars:
+            if current:
+                chunks.append(current.strip())
+                current = ""
+
+            cut_position = paragraph.rfind(" ", 0, max_chars)
+
+            if cut_position < max_chars // 2:
+                cut_position = max_chars
+
+            chunks.append(paragraph[:cut_position].strip())
+            paragraph = paragraph[cut_position:].strip()
+
+        if not paragraph:
+            continue
+
+        if len(current) + len(paragraph) + 1 <= max_chars:
+            current = f"{current}\n{paragraph}".strip()
         else:
-            current_words.append(word)
-            current_length += extra_length
+            if current:
+                chunks.append(current.strip())
 
-    if current_words:
-        chunks.append(" ".join(current_words))
+            current = paragraph
+
+    if current:
+        chunks.append(current.strip())
 
     return chunks
 
 
-# ==================================================
-# 4. SIMPLIFY THE COMPLETE PASSAGE
-# ==================================================
-def simplify_tamil(text):
-    chunks = split_text(text)
+def simplify_long_text(text, progress_label="Simplifying Tamil"):
+    """Simplify all parts of a long passage."""
+
+    chunks = split_into_chunks(text)
 
     if not chunks:
-        raise ValueError("Please enter Tamil text.")
+        raise RuntimeError("Please enter or upload some Tamil text.")
 
-    simplified_parts = []
+    simplified_chunks = []
 
-    progress_bar = st.progress(0)
+    progress = st.progress(0)
     status = st.empty()
 
+    for index, chunk in enumerate(chunks, start=1):
+        status.write(
+            f"{progress_label}: processing part "
+            f"{index} of {len(chunks)}..."
+        )
+
+        prompt = f"""
+Convert the following Tamil passage into simple, natural,
+modern Tamil that school students can understand.
+
+IMPORTANT:
+1. Preserve the original meaning and important information.
+2. Do not translate into English.
+3. Do not use Tanglish or Roman letters to write Tamil.
+4. Do not shorten the passage unnecessarily.
+5. Do not invent facts or add unrelated information.
+6. Return only the simplified Tamil text.
+7. If a phrase is classical or old-fashioned, explain it
+   using an appropriate modern Tamil expression.
+
+Tamil passage:
+
+{chunk}
+"""
+
+        answer = call_sarvam(prompt, max_tokens=3500)
+        simplified_chunks.append(answer)
+
+        progress.progress(index / len(chunks))
+
+    status.success("Tamil simplification completed!")
+
+    return "\n\n".join(simplified_chunks)
+
+
+# =========================================================
+# TEXT EXTRACTION FROM UPLOADED FILES
+# =========================================================
+
+def extract_text_from_image(uploaded_file):
+    """Extract Tamil and English text from an image using OCR."""
+
+    image_bytes = uploaded_file.getvalue()
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
     try:
-        for index, chunk in enumerate(chunks):
-            status.info(
-                f"Processing part {index + 1} of {len(chunks)}..."
-            )
-
-            result = simplify_chunk(chunk)
-
-            # Warn if the response is unusually short.
-            if len(chunk) > 150 and len(result) < 40:
-                raise RuntimeError(
-                    f"Part {index + 1} produced a very short answer. "
-                    "Please try this part again."
-                )
-
-            simplified_parts.append(result)
-
-            progress_bar.progress(
-                (index + 1) / len(chunks)
-            )
-
-    finally:
-        progress_bar.empty()
-        status.empty()
-
-    return "\n\n".join(simplified_parts)
-
-
-# ==================================================
-# 5. IMAGE OCR
-# ==================================================
-def extract_text_from_image(image):
-    try:
-        extracted = pytesseract.image_to_string(
+        extracted_text = pytesseract.image_to_string(
             image,
             lang="tam+eng"
         )
-
-        return extracted.strip()
-
     except Exception as error:
         raise RuntimeError(
-            "Tamil OCR failed. Check that packages.txt contains "
-            "tesseract-ocr and tesseract-ocr-tam. "
-            "Try uploading a clearer image."
-        ) from error
+            "Tamil OCR failed. Check packages.txt and make sure "
+            "Tamil Tesseract language support is installed. "
+            f"Details: {error}"
+        )
+
+    if not extracted_text.strip():
+        raise RuntimeError(
+            "No text was detected. Please upload a clearer image."
+        )
+
+    return extracted_text.strip()
 
 
-# ==================================================
-# 6. PDF TEXT EXTRACTION
-# ==================================================
 def extract_text_from_pdf(uploaded_file):
+    """Extract selectable text from a PDF."""
+
+    pdf_bytes = io.BytesIO(uploaded_file.getvalue())
+
     try:
-        reader = PdfReader(uploaded_file)
-        pages = []
+        reader = PdfReader(pdf_bytes)
+        page_texts = []
 
-        for page_number, page in enumerate(reader.pages, start=1):
-            page_text = page.extract_text() or ""
+        for page in reader.pages:
+            page_texts.append(page.extract_text() or "")
 
-            if page_text.strip():
-                pages.append(page_text.strip())
-
-        return "\n\n".join(pages)
+        extracted_text = "\n\n".join(page_texts).strip()
 
     except Exception as error:
+        raise RuntimeError(f"Could not read the PDF: {error}")
+
+    if not extracted_text:
         raise RuntimeError(
-            f"Could not read the PDF: {error}"
-        ) from error
+            "No selectable text was found in this PDF. "
+            "If it is a scanned PDF, save the page as an image "
+            "and upload the JPG or PNG instead."
+        )
+
+    return extracted_text
 
 
-# ==================================================
-# 7. FILE UPLOAD SECTION
-# ==================================================
-st.header("1. Upload a PDF or image")
+# =========================================================
+# BUILT-IN TAMIL POEM COLLECTION
+# =========================================================
 
-uploaded_file = st.file_uploader(
-    "Select a file containing Tamil text",
-    type=["pdf", "jpg", "jpeg", "png"],
-    help="Supported files: PDF, JPG, JPEG and PNG."
-)
+POEMS = {
+    "யாதும் ஊரே யாவரும் கேளிர் — கணியன் பூங்குன்றனார்": {
+        "author": "கணியன் பூங்குன்றனார்",
+        "period": "சங்க இலக்கியம் — புறநானூறு",
+        "poem": """யாதும் ஊரே யாவரும் கேளிர்
+தீதும் நன்றும் பிறர்தர வாரா
+நோதலும் தணிதலும் அவற்றோரன்ன
+சாதலும் புதுவது அன்றே
+வாழ்தல் இனிதென மகிழ்ந்தன்றும் இலமே
+முனிவின் இன்னாது என்றலும் இலமே""",
+        "note": (
+            "இது புறநானூற்றில் இடம்பெறும் புகழ்பெற்ற பாடலின் "
+            "தொடக்கப் பகுதிகளைக் கொண்ட எடுத்துக்காட்டு. "
+            "முழுப் பாடலின் விளக்கத்திற்கு நம்பகமான பாடநூல் "
+            "அல்லது பதிப்பைப் பயன்படுத்தவும்."
+        )
+    },
 
-if uploaded_file is not None:
+    "கற்க கசடற — திருவள்ளுவர்": {
+        "author": "திருவள்ளுவர்",
+        "period": "திருக்குறள் — கல்வி",
+        "poem": "கற்க கசடறக் கற்பவை கற்றபின்\nநிற்க அதற்குத் தக.",
+        "note": (
+            "திருக்குறள் 391. கல்வியைப் பிழையின்றிக் கற்று, "
+            "கற்றதற்கேற்ப வாழ வேண்டும் என்பதே கருத்து."
+        )
+    },
 
-    file_name = uploaded_file.name.lower()
+    "அகர முதல — திருவள்ளுவர்": {
+        "author": "திருவள்ளுவர்",
+        "period": "திருக்குறள் — கடவுள் வாழ்த்து",
+        "poem": "அகர முதல எழுத்தெல்லாம் ஆதி\nபகவன் முதற்றே உலகு.",
+        "note": (
+            "திருக்குறள் 1. எழுத்துகளுக்கு அகரம் முதன்மையானது போல, "
+            "உலகிற்கு இறைவன் முதன்மையானவர் என்று இந்தக் குறள் கூறுகிறது."
+        )
+    },
 
-    try:
-        if file_name.endswith(".pdf"):
+    "தீயினால் சுட்ட புண் — திருவள்ளுவர்": {
+        "author": "திருவள்ளுவர்",
+        "period": "திருக்குறள் — இன்னா செய்யாமை",
+        "poem": (
+            "தீயினால் சுட்ட புண் உள்ளாறும் ஆறாதே\n"
+            "நாவினால் சுட்ட வடு."
+        ),
+        "note": (
+            "திருக்குறள் 129. தீயால் ஏற்பட்ட காயம் ஆறலாம்; "
+            "ஆனால் கடுமையான சொற்களால் ஏற்பட்ட மனக்காயம் எளிதில் ஆறாது."
+        )
+    },
 
-            with st.spinner("Reading PDF..."):
-                extracted_text = extract_text_from_pdf(uploaded_file)
-
-            if extracted_text:
-                st.session_state["input_text"] = extracted_text
-
-                st.success(
-                    "PDF text extracted. You can review it below."
-                )
-
-            else:
-                st.warning(
-                    "No selectable text was found in this PDF. "
-                    "If it is a scanned document, upload its pages "
-                    "as JPG or PNG images instead."
-                )
-
-        else:
-            image_file = Image.open(uploaded_file).convert("RGB")
-
-            st.image(
-                image_file,
-                caption="Uploaded image",
-                use_container_width=True
-            )
-
-            with st.spinner("Extracting Tamil text from image..."):
-                extracted_text = extract_text_from_image(image_file)
-
-            if extracted_text:
-                st.session_state["input_text"] = extracted_text
-
-                st.success(
-                    "Image text extracted. Review it in the text box below."
-                )
-
-            else:
-                st.warning(
-                    "No text was detected. Try a clearer image "
-                    "with larger, sharper Tamil letters."
-                )
-
-    except Exception as error:
-        st.error(str(error))
-
-
-st.divider()
-
-
-# ==================================================
-# 8. TEXT INPUT SECTION
-# ==================================================
-st.header("2. Enter or review Tamil text")
-
-if "input_text" not in st.session_state:
-    st.session_state["input_text"] = ""
-
-input_text = st.text_area(
-    "Your Tamil passage",
-    key="input_text",
-    height=260,
-    placeholder=(
-        "இங்கே பழந்தமிழ் அல்லது கடினமான தமிழ் உரையை உள்ளிடவும்..."
-    ),
-    help="You can paste text directly or edit the text extracted from a file."
-)
-
-st.caption(
-    f"Characters entered: {len(input_text)}"
-)
+    "ஒழுக்கம் விழுப்பம் தரலான் — திருவள்ளுவர்": {
+        "author": "திருவள்ளுவர்",
+        "period": "திருக்குறள் — ஒழுக்கமுடைமை",
+        "poem": "ஒழுக்கம் விழுப்பம் தரலான் ஒழுக்கம்\nஉயிரினும் ஓம்பப் படும்.",
+        "note": (
+            "திருக்குறள் 131. ஒழுக்கம் மனிதனுக்குப் பெருமை தருவதால், "
+            "அதை உயிரைவிட முக்கியமாகக் காக்க வேண்டும்."
+        )
+    }
+}
 
 
-# ==================================================
-# 9. CONVERSION BUTTON
-# ==================================================
-st.header("3. Convert to Simple Tamil")
+# =========================================================
+# MAIN NAVIGATION
+# =========================================================
 
-convert_button = st.button(
-    "✨ Convert to Simple Tamil",
-    type="primary",
-    use_container_width=False
-)
+tab_text, tab_poem = st.tabs([
+    "📝 Tamil Text Simplifier",
+    "📜 Tamil Poem Learning"
+])
 
-if convert_button:
 
-    if not input_text.strip():
-        st.warning(
-            "Please enter Tamil text or upload a readable file first."
+# =========================================================
+# TAB 1 — EXISTING TEXT SIMPLIFIER
+# =========================================================
+
+with tab_text:
+
+    st.header("📝 Convert Difficult Tamil into Simple Tamil")
+
+    st.write(
+        "Type Tamil text or upload a PDF/image. "
+        "The app extracts the text and simplifies it for students."
+    )
+
+    input_method = st.radio(
+        "Choose your input method:",
+        ["Type or paste text", "Upload PDF or image"],
+        horizontal=True,
+        key="text_input_method"
+    )
+
+    original_text = ""
+
+    if input_method == "Type or paste text":
+
+        original_text = st.text_area(
+            "Enter your Tamil text here:",
+            height=250,
+            placeholder="இங்கே தமிழ் உரையை உள்ளிடவும்...",
+            key="manual_tamil_text"
         )
 
     else:
-        try:
-            with st.spinner(
-                "Sarvam AI is rewriting your passage..."
-            ):
-                simplified_text = simplify_tamil(
-                    input_text.strip()
+
+        uploaded_file = st.file_uploader(
+            "Upload a PDF, JPG, JPEG, or PNG file",
+            type=["pdf", "jpg", "jpeg", "png"],
+            key="text_file_upload"
+        )
+
+        if uploaded_file is not None:
+
+            file_name = uploaded_file.name.lower()
+
+            try:
+                if file_name.endswith(".pdf"):
+                    original_text = extract_text_from_pdf(uploaded_file)
+                else:
+                    original_text = extract_text_from_image(uploaded_file)
+
+                st.success("Text extracted successfully!")
+
+                st.text_area(
+                    "Extracted original text:",
+                    value=original_text,
+                    height=250,
+                    key="extracted_text_preview"
                 )
 
-            st.session_state["original_text"] = input_text.strip()
-            st.session_state["simple_text"] = simplified_text
+            except Exception as error:
+                st.error(str(error))
 
-            st.success(
-                "Your Tamil passage has been converted!"
-            )
+    if st.button(
+        "✨ Simplify Tamil Text",
+        type="primary",
+        key="simplify_text_button"
+    ):
 
-        except Exception as error:
-            st.error(
-                f"Conversion failed: {error}"
-            )
+        if not original_text.strip():
+
+            st.warning("Please enter Tamil text or upload a file.")
+
+        else:
+
+            try:
+                with st.spinner(
+                    "Converting into simple modern Tamil..."
+                ):
+                    simplified_text = simplify_long_text(
+                        original_text,
+                        progress_label="Simplifying passage"
+                    )
+
+                st.subheader("📖 Original and Simplified Tamil")
+
+                original_column, simplified_column = st.columns(2)
+
+                with original_column:
+                    st.markdown("#### Original Tamil")
+                    st.text_area(
+                        "Original text",
+                        value=original_text,
+                        height=400,
+                        key="original_result"
+                    )
+
+                with simplified_column:
+                    st.markdown("#### Simple Modern Tamil")
+                    st.text_area(
+                        "Simplified text",
+                        value=simplified_text,
+                        height=400,
+                        key="simplified_result"
+                    )
+
+            except Exception as error:
+                st.error(str(error))
 
 
-# ==================================================
-# 10. ORIGINAL VS SIMPLE TAMIL
-# ==================================================
-original_text = st.session_state.get("original_text", "")
-simple_text = st.session_state.get("simple_text", "")
+# =========================================================
+# TAB 2 — POEM LEARNING
+# =========================================================
 
-if original_text and simple_text:
+with tab_poem:
 
-    st.divider()
-    st.header("4. Original vs Simple Tamil")
+    st.header("📜 Tamil Poem Learning")
 
-    original_column, simple_column = st.columns(2)
-
-    with original_column:
-        st.subheader("📜 Original Tamil")
-
-        st.text_area(
-            "Original passage",
-            value=original_text,
-            height=450,
-            disabled=True,
-            key="original_display"
-        )
-
-    with simple_column:
-        st.subheader("🌱 Simple Modern Tamil")
-
-        st.text_area(
-            "Simplified passage",
-            value=simple_text,
-            height=450,
-            disabled=True,
-            key="simple_display"
-        )
-
-    st.info(
-        "Please review the simplified passage to ensure the original "
-        "meaning and important information are preserved."
+    st.write(
+        "Choose a poem from the collection or enter your own poem. "
+        "The app explains the poem in simple modern Tamil."
     )
 
-    st.caption(
-        f"Original: {len(original_text)} characters | "
-        f"Simplified: {len(simple_text)} characters"
+    poem_mode = st.radio(
+        "Choose how to provide the poem:",
+        [
+            "Choose from poem collection",
+            "Enter my own poem"
+        ],
+        horizontal=True,
+        key="poem_mode"
     )
 
+    poem_title = ""
+    poem_author = ""
+    poem_text = ""
 
-# ==================================================
-# 11. FOOTER
-# ==================================================
-st.divider()
+    if poem_mode == "Choose from poem collection":
+
+        poem_title = st.selectbox(
+            "Select a Tamil poem:",
+            list(POEMS.keys()),
+            key="poem_selector"
+        )
+
+        selected_poem = POEMS[poem_title]
+
+        poem_author = selected_poem["author"]
+        poem_text = selected_poem["poem"]
+
+        st.caption(
+            f"Author: {poem_author} | "
+            f"Literature: {selected_poem['period']}"
+        )
+
+        st.markdown("#### Original Poem")
+        st.text_area(
+            "Selected poem",
+            value=poem_text,
+            height=180,
+            key="selected_poem_preview"
+        )
+
+        st.info(selected_poem["note"])
+
+    else:
+
+        poem_title = st.text_input(
+            "Poem title (optional):",
+            placeholder="Enter the poem title",
+            key="custom_poem_title"
+        )
+
+        poem_author = st.text_input(
+            "Poet name (optional):",
+            placeholder="Enter the poet's name",
+            key="custom_poem_author"
+        )
+
+        poem_text = st.text_area(
+            "Paste your Tamil poem:",
+            height=220,
+            placeholder="இங்கே முழுத் தமிழ்ப் பாடலையும் உள்ளிடவும்...",
+            key="custom_poem_text"
+        )
+
+    st.markdown("---")
+
+    explain_poem = st.button(
+        "📚 Explain Poem in Simple Tamil",
+        type="primary",
+        key="explain_poem_button"
+    )
+
+    if explain_poem:
+
+        if not poem_text.strip():
+
+            st.warning("Please select or enter a Tamil poem.")
+
+        else:
+
+            try:
+
+                poem_prompt = f"""
+You are a Tamil literature teacher helping school students.
+
+Explain the following poem in SIMPLE, NATURAL MODERN TAMIL.
+
+Poem title: {poem_title or "Not provided"}
+Poet: {poem_author or "Not provided"}
+
+ORIGINAL POEM:
+{poem_text}
+
+Give the answer using exactly these headings:
+
+### 1. எளிய நவீன தமிழ்
+Rewrite the poem's meaning in simple modern Tamil.
+Preserve the original ideas. Do not invent new lines.
+Keep the explanation suitable for students.
+
+### 2. பாடலின் மொத்தப் பொருள்
+Explain the central meaning of the poem in simple Tamil.
+Explain what the poet wants readers to understand.
+
+### 3. கடினமான சொற்களின் பொருள்
+List important difficult words from the actual poem
+and explain each in simple Tamil.
+Use a bullet list in this format:
+- சொல்லின் பொருள்: எளிய விளக்கம்
+
+Only include words that genuinely appear in the poem.
+If a word has multiple meanings, explain the meaning
+that best fits this poem.
+
+### 4. மாணவர்கள் கற்றுக்கொள்ள வேண்டியது
+Give 2 to 4 short points about the lesson or message
+students can learn from the poem.
+
+### 5. சிறிய சுருக்கம்
+Give a short, easy-to-remember summary in Tamil.
+
+IMPORTANT:
+- Write the answer in Tamil script.
+- Do not use Tanglish.
+- Do not translate the answer into English.
+- Do not claim that your interpretation is the only possible one.
+- Do not fabricate missing poem lines or historical facts.
+- If the supplied poem is incomplete, explain only the supplied text.
+"""
+
+                with st.spinner(
+                    "Understanding the poem and preparing "
+                    "the student-friendly explanation..."
+                ):
+
+                    poem_explanation = call_sarvam(
+                        poem_prompt,
+                        max_tokens=3500
+                    )
+
+                st.success("Poem explanation is ready!")
+
+                st.markdown("## 📜 Original Poem")
+
+                if poem_title:
+                    st.markdown(f"**{poem_title}**")
+
+                st.text_area(
+                    "Original poem text",
+                    value=poem_text,
+                    height=180,
+                    key="poem_original_result"
+                )
+
+                st.markdown("## 🎓 Student-Friendly Explanation")
+
+                st.markdown(poem_explanation)
+
+            except Exception as error:
+                st.error(str(error))
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.markdown("---")
 
 st.caption(
-    "Ancient Tamil to Simple Modern Tamil | Powered by Sarvam AI"
+    "Tamil Learning Assistant | Powered by Sarvam AI | "
+    "For educational use. Verify poem text and interpretations "
+    "with your textbook or a trusted Tamil literature source."
 )
+
 
 
 
