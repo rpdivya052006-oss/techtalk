@@ -3,5 +3,5 @@ streamlit
 requests
 pillow
 pytesseract
-fpdf2
-uharfbuzz
+pypdf
+
