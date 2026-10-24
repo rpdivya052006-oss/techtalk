@@ -3,4 +3,5 @@ streamlit
 requests
 pillow
 pytesseract
-reportlab
+fpdf2
+uharfbuzz
