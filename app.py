@@ -1,9 +1,13 @@
 
 import streamlit as st
 import requests
+from io import BytesIO
 from pypdf import PdfReader
 from docx import Document
-from io import BytesIO
+
+# ==================================================
+# PAGE SETTINGS
+# ==================================================
 
 st.set_page_config(
     page_title="Ancient Tamil Learning Assistant",
@@ -13,12 +17,25 @@ st.set_page_config(
 
 st.title("📜 Ancient Tamil Learning Assistant")
 st.write(
-    "Understand Ancient Tamil through simple modern Tamil, "
-    "word meanings, explanations, and voice input."
+    "Speak or enter Ancient Tamil text and understand it "
+    "in simple modern Tamil."
 )
 
 
-# ---------------- API KEY ----------------
+# ==================================================
+# SESSION STATE
+# ==================================================
+
+if "tamil_input" not in st.session_state:
+    st.session_state["tamil_input"] = ""
+
+if "tamil_result" not in st.session_state:
+    st.session_state["tamil_result"] = ""
+
+
+# ==================================================
+# API KEY
+# ==================================================
 
 def get_api_key():
     try:
@@ -27,12 +44,17 @@ def get_api_key():
         return None
 
 
-# ---------------- TAMIL VOICE INPUT ----------------
+# ==================================================
+# VOICE TO TAMIL TEXT
+# ==================================================
 
 def transcribe_tamil_audio(audio_bytes, api_key):
+
     response = requests.post(
         "https://api.sarvam.ai/speech-to-text",
-        headers={"api-subscription-key": api_key},
+        headers={
+            "api-subscription-key": api_key
+        },
         files={
             "file": (
                 "tamil_voice.wav",
@@ -49,23 +71,32 @@ def transcribe_tamil_audio(audio_bytes, api_key):
     )
 
     response.raise_for_status()
-    return response.json().get("transcript", "").strip()
+
+    result = response.json()
+    return result.get("transcript", "").strip()
 
 
-# ---------------- AI TAMIL EXPLANATION ----------------
+# ==================================================
+# ANCIENT TAMIL EXPLANATION
+# ==================================================
 
 def simplify_tamil(text, api_key):
+
     prompt = f"""
-You are an expert Tamil literature teacher.
+You are an expert Tamil language and literature teacher.
 
 Explain the following Ancient or Classical Tamil text
-in simple, clear modern Tamil.
+in clear, simple modern Tamil.
 
-Keep the original meaning accurate.
-Use Tamil script, not Tanglish.
-Do not invent meanings if the text is unclear.
+Instructions:
+- Use Tamil script, not Tanglish.
+- Preserve the original meaning.
+- Explain difficult and old Tamil words.
+- Explain each line clearly when possible.
+- Do not invent meanings if the text is unclear.
+- Make the explanation suitable for students.
 
-Give the result using these headings:
+Use these headings:
 
 1. எளிய நவீன தமிழ்
 2. கடினமான சொற்களின் பொருள்
@@ -89,7 +120,10 @@ Tamil text:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a Tamil literature teacher."
+                    "content": (
+                        "You are a careful Tamil literature teacher. "
+                        "Answer in simple modern Tamil."
+                    )
                 },
                 {
                     "role": "user",
@@ -105,19 +139,24 @@ Tamil text:
     response.raise_for_status()
 
     result = response.json()
-    return result["choices"][0]["message"]["content"]
+    return result["choices"][0]["message"]["content"].strip()
 
 
-# ---------------- FILE TEXT EXTRACTION ----------------
+# ==================================================
+# FILE EXTRACTION
+# ==================================================
 
 def extract_text(uploaded_file):
+
     filename = uploaded_file.name.lower()
     file_bytes = uploaded_file.getvalue()
 
     if filename.endswith(".txt"):
+
         return file_bytes.decode("utf-8-sig")
 
     elif filename.endswith(".pdf"):
+
         pdf = PdfReader(BytesIO(file_bytes))
 
         text = "\n".join(
@@ -128,35 +167,29 @@ def extract_text(uploaded_file):
         if not text:
             raise ValueError(
                 "No selectable text found in this PDF. "
-                "Please paste the text manually."
+                "Please copy or type the Tamil text manually."
             )
 
         return text
 
     elif filename.endswith(".docx"):
-        doc = Document(BytesIO(file_bytes))
 
-        return "\n".join(
-            p.text for p in doc.paragraphs
-            if p.text.strip()
-        )
+        document = Document(BytesIO(file_bytes))
 
-    else:
-        raise ValueError(
-            "Please upload a TXT, PDF, or DOCX file."
-        )
+        paragraphs = [
+            paragraph.text
+            for paragraph in document.paragraphs
+            if paragraph.text.strip()
+        ]
 
+        return "\n".join(paragraphs)
 
-# ---------------- SESSION STATE ----------------
-
-if "tamil_input" not in st.session_state:
-    st.session_state["tamil_input"] = ""
-
-if "tamil_result" not in st.session_state:
-    st.session_state["tamil_result"] = ""
+    raise ValueError("Please upload a TXT, PDF, or DOCX file.")
 
 
-# ---------------- INPUT METHOD ----------------
+# ==================================================
+# CHOOSE INPUT METHOD
+# ==================================================
 
 st.header("1. Add Your Tamil Text")
 
@@ -171,31 +204,21 @@ method = st.radio(
 )
 
 
-# ---------------- TYPE TEXT ----------------
+# ==================================================
+# VOICE RECORDING
+# ==================================================
 
-if method == "Type or Paste":
-
-    st.session_state["tamil_input"] = st.text_area(
-        "Enter Ancient Tamil text",
-        value=st.session_state["tamil_input"],
-        height=200,
-        key="typed_text",
-        placeholder="Paste your Tamil poem or paragraph here..."
-    )
-
-
-# ---------------- VOICE INPUT ----------------
-
-elif method == "Speak in Tamil":
+if method == "Speak in Tamil":
 
     st.write(
-        "Record your Tamil voice. "
-        "The app will convert your speech into text."
+        "Record your Tamil voice and convert it into text. "
+        "You can make additional recordings to add more text."
     )
 
     audio = st.audio_input(
         "🎙️ Record Tamil Voice",
-        sample_rate=16000
+        sample_rate=16000,
+        key="tamil_audio"
     )
 
     if st.button("Convert Voice to Tamil Text"):
@@ -203,135 +226,197 @@ elif method == "Speak in Tamil":
         api_key = get_api_key()
 
         if not api_key:
+
             st.error(
-                "Please add SARVAM_API_KEY in "
+                "API key missing. Add SARVAM_API_KEY in "
                 "Streamlit Cloud → Settings → Secrets."
             )
 
         elif audio is None:
+
             st.warning("Please record your voice first.")
 
         else:
+
             try:
+
                 with st.spinner(
-                    "Converting your voice into Tamil text..."
+                    "Converting your Tamil voice into text..."
                 ):
+
                     transcript = transcribe_tamil_audio(
                         audio.getvalue(),
                         api_key
                     )
 
                 if transcript:
-                    st.session_state["tamil_input"] = transcript
+
+                    # Append recognized speech to the existing text.
+                    previous_text = st.session_state["tamil_input"].strip()
+
+                    if previous_text:
+                        st.session_state["tamil_input"] = (
+                            previous_text + "\n" + transcript
+                        )
+                    else:
+                        st.session_state["tamil_input"] = transcript
+
+                    st.session_state["tamil_result"] = ""
+
                     st.success(
-                        "Voice converted! Check the text below."
+                        "Tamil text recognized! Check the text box below."
                     )
+
                 else:
+
                     st.warning(
-                        "No speech detected. Please record again."
+                        "No text was recognized. Please try again."
                     )
 
-            except requests.exceptions.HTTPError as e:
+            except requests.exceptions.HTTPError as error:
+
                 details = (
-                    e.response.text
-                    if e.response is not None
-                    else str(e)
+                    error.response.text
+                    if error.response is not None
+                    else str(error)
                 )
-                st.error(f"Voice API error: {details}")
 
-            except Exception as e:
-                st.error(f"Voice conversion failed: {e}")
+                st.error(
+                    "Voice conversion failed. API response: "
+                    + details
+                )
 
-    st.session_state["tamil_input"] = st.text_area(
-        "Recognized Tamil text — edit if needed",
-        value=st.session_state["tamil_input"],
-        height=200,
-        key="voice_text_editor"
-    )
+            except requests.exceptions.Timeout:
+
+                st.error(
+                    "The request timed out. Please try again."
+                )
+
+            except Exception as error:
+
+                st.error(f"Voice conversion failed: {error}")
 
 
-# ---------------- UPLOAD FILE ----------------
+# ==================================================
+# FILE UPLOAD
+# ==================================================
 
-else:
+elif method == "Upload a File":
 
     uploaded_file = st.file_uploader(
-        "Upload a Tamil text document",
+        "Upload a TXT, PDF, or DOCX file",
         type=["txt", "pdf", "docx"]
     )
 
-    if uploaded_file is not None:
+    if st.button("Extract Text from File"):
 
-        if st.button("Extract Text from File"):
+        if uploaded_file is None:
+
+            st.warning("Please select a file first.")
+
+        else:
 
             try:
-                extracted = extract_text(uploaded_file)
 
-                st.session_state["tamil_input"] = extracted
-                st.success("Text extracted successfully.")
+                extracted_text = extract_text(uploaded_file)
 
-            except Exception as e:
-                st.error(f"File reading failed: {e}")
+                st.session_state["tamil_input"] = extracted_text
+                st.session_state["tamil_result"] = ""
 
-    st.session_state["tamil_input"] = st.text_area(
-        "Extracted Tamil text — edit if needed",
-        value=st.session_state["tamil_input"],
-        height=200,
-        key="file_text_editor"
+                st.success("Text extracted successfully!")
+
+            except Exception as error:
+
+                st.error(f"File reading failed: {error}")
+
+
+# ==================================================
+# ONE SHARED EDITABLE TEXT BOX
+# ==================================================
+
+st.subheader("Recognized or Entered Tamil Text")
+
+st.text_area(
+    "Edit your Tamil text here",
+    key="tamil_input",
+    height=220,
+    placeholder=(
+        "Type Tamil here, speak using the microphone, "
+        "or extract text from a file..."
     )
+)
 
 
-# ---------------- SIMPLIFY BUTTON ----------------
+# ==================================================
+# SIMPLIFY BUTTON
+# ==================================================
 
 st.divider()
+
 st.header("2. Simplify Ancient Tamil")
 
-if st.button("✨ Simplify Tamil and Explain", type="primary"):
+if st.button(
+    "✨ Simplify Tamil and Explain",
+    type="primary"
+):
 
     api_key = get_api_key()
-    text = st.session_state["tamil_input"].strip()
+    source_text = st.session_state["tamil_input"].strip()
 
     if not api_key:
+
         st.error(
-            "Add SARVAM_API_KEY in Streamlit Cloud Secrets."
+            "Add SARVAM_API_KEY in "
+            "Streamlit Cloud → Settings → Secrets."
         )
 
-    elif not text:
+    elif not source_text:
+
         st.warning(
-            "Please type, speak, or upload Tamil text first."
+            "Please enter, record, or upload Tamil text first."
         )
 
     else:
+
         try:
+
             with st.spinner(
-                "Preparing your Tamil explanation..."
+                "Preparing your modern Tamil explanation..."
             ):
-                st.session_state["tamil_result"] = simplify_tamil(
-                    text,
-                    api_key
-                )
+
+                result = simplify_tamil(source_text, api_key)
+
+            st.session_state["tamil_result"] = result
 
         except requests.exceptions.Timeout:
+
             st.error(
-                "Request timed out. Please try a shorter paragraph."
+                "The request took too long. Try a shorter paragraph."
             )
 
-        except requests.exceptions.HTTPError as e:
+        except requests.exceptions.HTTPError as error:
+
             details = (
-                e.response.text
-                if e.response is not None
-                else str(e)
+                error.response.text
+                if error.response is not None
+                else str(error)
             )
+
             st.error(f"Sarvam API error: {details}")
 
-        except Exception as e:
-            st.error(f"Something went wrong: {e}")
+        except Exception as error:
+
+            st.error(f"Something went wrong: {error}")
 
 
-# ---------------- DISPLAY RESULT ----------------
+# ==================================================
+# DISPLAY RESULT
+# ==================================================
 
 if st.session_state["tamil_result"]:
 
     st.divider()
+
     st.header("📚 Your Learning Result")
 
     st.markdown(st.session_state["tamil_result"])
@@ -343,10 +428,17 @@ if st.session_state["tamil_result"]:
         mime="text/plain"
     )
 
+
+# ==================================================
+# FOOTER
+# ==================================================
+
 st.caption(
-    "AI-generated explanations may contain mistakes. "
-    "Verify important literary meanings with a Tamil teacher."
+    "AI explanations may contain mistakes, especially for rare "
+    "classical Tamil words. Verify important meanings with a "
+    "Tamil teacher or trusted reference."
 )
+
 
 
 
