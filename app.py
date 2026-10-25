@@ -1,7 +1,5 @@
-
 import io
 import re
-import hashlib
 import requests
 import streamlit as st
 import pytesseract
@@ -28,36 +26,12 @@ st.markdown(
     Understand difficult Tamil in simple modern Tamil.
 
     - 📝 Tamil text simplification
-    - 🎙️ Tamil voice-to-text
     - 📄 PDF and image text extraction
     - 🗂️ Word document support
     - 📜 Tamil poem learning
-    - 🕘 History
     - 📖 Student-friendly explanations
     """
 )
-
-
-# =====================================================
-# SESSION STATE
-# =====================================================
-
-defaults = {
-    "latest_original_text": "",
-    "latest_simplified_text": "",
-    "history": [],
-    "recognized_voice_text": "",
-    "active_text_file_id": "",
-    "extracted_text_preview": "",
-    "active_poem_file_id": "",
-    "reviewed_poem_text": "",
-    "poem_explanation": "",
-    "latest_poem_text": ""
-}
-
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
 
 
 # =====================================================
@@ -368,6 +342,7 @@ def extract_text_from_word(uploaded_file):
             if paragraph.text.strip()
         ]
 
+        # Also extract text from tables in the document.
         for table in document.tables:
             for row in table.rows:
                 row_text = " | ".join(
@@ -411,75 +386,12 @@ def extract_uploaded_file(uploaded_file):
 
 
 # =====================================================
-# VOICE TO TEXT
-# =====================================================
-
-def convert_voice_to_text(audio_file):
-
-    api_key = get_api_key()
-
-    if not api_key:
-        raise RuntimeError(
-            "SARVAM_API_KEY is missing. Add it in "
-            "Streamlit Cloud → Settings → Secrets."
-        )
-
-    headers = {
-        "api-subscription-key": api_key
-    }
-
-    files = {
-        "file": (
-            "tamil_voice.wav",
-            audio_file.getvalue(),
-            "audio/wav"
-        )
-    }
-
-    data = {
-        "model": "saaras:v2.5",
-        "language_code": "ta-IN"
-    }
-
-    try:
-        response = requests.post(
-            "https://api.sarvam.ai/speech-to-text",
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=120
-        )
-
-    except requests.exceptions.RequestException as error:
-        raise RuntimeError(
-            f"Voice conversion failed: {error}"
-        )
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Voice API error ({response.status_code}): "
-            f"{response.text[:500]}"
-        )
-
-    result = response.json()
-    transcript = result.get("transcript", "").strip()
-
-    if not transcript:
-        raise RuntimeError(
-            "No speech was detected. Please record again."
-        )
-
-    return transcript
-
-
-# =====================================================
 # MAIN TABS
 # =====================================================
 
-text_tab, poem_tab, history_tab = st.tabs([
+text_tab, poem_tab = st.tabs([
     "📝 Tamil Text Simplifier",
-    "📜 Tamil Poem Learning",
-    "🕘 History"
+    "📜 Tamil Poem Learning"
 ])
 
 
@@ -492,16 +404,12 @@ with text_tab:
     st.header("📝 Tamil Text Simplifier")
 
     st.write(
-        "Type Tamil text, speak, or upload a PDF, Word document, or image."
+        "Enter Tamil text or upload a PDF or image."
     )
 
     input_method = st.radio(
         "Choose input method:",
-        [
-            "Type or paste text",
-            "Speak in Tamil",
-            "Upload file or image"
-        ],
+        ["Type or paste text", "Upload PDF or image"],
         horizontal=True,
         key="text_input_method"
     )
@@ -510,7 +418,6 @@ with text_tab:
 
     if input_method == "Type or paste text":
 
-        # The widget keeps the current editable input.
         original_text = st.text_area(
             "Enter Tamil text:",
             height=250,
@@ -518,62 +425,26 @@ with text_tab:
             key="manual_tamil_text"
         )
 
-    elif input_method == "Speak in Tamil":
-
-        audio_file = st.audio_input(
-            "Record your Tamil speech",
-            key="tamil_voice_input"
-        )
-
-        if audio_file is not None:
-
-            audio_id = hashlib.md5(
-                audio_file.getvalue()
-            ).hexdigest()
-
-            if st.session_state.get("voice_audio_id") != audio_id:
-
-                try:
-                    with st.spinner("Converting voice to text..."):
-                        transcript = convert_voice_to_text(audio_file)
-
-                    st.session_state["recognized_voice_text"] = transcript
-                    st.session_state["voice_audio_id"] = audio_id
-
-                except Exception as error:
-                    st.error(str(error))
-
-        original_text = st.text_area(
-            "Recognized Tamil text (you can edit it):",
-            height=250,
-            key="recognized_voice_text"
-        )
-
     else:
 
         uploaded_file = st.file_uploader(
-            "Upload PDF, DOCX, JPG, JPEG, or PNG",
-            type=["pdf", "docx", "jpg", "jpeg", "png"],
+            "Upload PDF, JPG, JPEG, or PNG",
+            type=["pdf", "jpg", "jpeg", "png"],
             key="text_file_upload"
         )
 
         if uploaded_file is not None:
 
             try:
-                file_id = hashlib.md5(
-                    uploaded_file.getvalue()
-                ).hexdigest()
+                original_text = extract_uploaded_file(
+                    uploaded_file
+                )
 
-                # Re-extract when a different file is uploaded.
-                if st.session_state.get("active_text_file_id") != file_id:
+                st.success("Text extracted successfully!")
 
-                    extracted = extract_uploaded_file(uploaded_file)
-
-                    st.session_state["active_text_file_id"] = file_id
-                    st.session_state["extracted_text_preview"] = extracted
-
-                original_text = st.text_area(
-                    "Extracted text (you can edit it):",
+                st.text_area(
+                    "Extracted text:",
+                    value=original_text,
                     height=250,
                     key="extracted_text_preview"
                 )
@@ -581,19 +452,14 @@ with text_tab:
             except Exception as error:
                 st.error(str(error))
 
-        else:
-            st.session_state["active_text_file_id"] = ""
-            st.session_state["extracted_text_preview"] = ""
-
     if st.button(
         "✨ Simplify Tamil Text",
         type="primary",
         key="simplify_text_button"
     ):
 
-        latest_text = original_text.strip()
+        if not original_text.strip():
 
-        if not latest_text:
             st.warning("Please enter text or upload a file.")
 
         else:
@@ -602,46 +468,30 @@ with text_tab:
                 with st.spinner(
                     "Converting into simple modern Tamil..."
                 ):
-                    simplified = simplify_long_text(latest_text)
+                    simplified = simplify_long_text(original_text)
 
-                # Replace old result with the latest result.
-                st.session_state["latest_original_text"] = latest_text
-                st.session_state["latest_simplified_text"] = simplified
+                left, right = st.columns(2)
 
-                st.session_state["history"].insert(
-                    0,
-                    {
-                        "original": latest_text,
-                        "simplified": simplified
-                    }
-                )
+                with left:
+                    st.subheader("Original Tamil")
+                    st.text_area(
+                        "Original text",
+                        value=original_text,
+                        height=400,
+                        key="original_result"
+                    )
 
-                st.success("New text simplified successfully!")
+                with right:
+                    st.subheader("Simple Modern Tamil")
+                    st.text_area(
+                        "Simplified text",
+                        value=simplified,
+                        height=400,
+                        key="simplified_result"
+                    )
 
             except Exception as error:
                 st.error(str(error))
-
-    if st.session_state["latest_simplified_text"]:
-
-        left, right = st.columns(2)
-
-        with left:
-            st.subheader("Original Tamil")
-            st.text_area(
-                "Original text",
-                value=st.session_state["latest_original_text"],
-                height=400,
-                key="latest_original_display"
-            )
-
-        with right:
-            st.subheader("Simple Modern Tamil")
-            st.text_area(
-                "Simplified text",
-                value=st.session_state["latest_simplified_text"],
-                height=400,
-                key="latest_simplified_display"
-            )
 
 
 # =====================================================
@@ -703,31 +553,22 @@ with poem_tab:
         if poem_file is not None:
 
             try:
-                poem_file_id = hashlib.md5(
-                    poem_file.getvalue()
-                ).hexdigest()
-
-                if st.session_state.get("active_poem_file_id") != poem_file_id:
-
-                    extracted_poem = extract_uploaded_file(poem_file)
-
-                    st.session_state["active_poem_file_id"] = poem_file_id
-                    st.session_state["reviewed_poem_text"] = extracted_poem
+                poem_text = extract_uploaded_file(poem_file)
 
                 st.success("Poem text extracted successfully!")
 
+                st.markdown("#### Check the extracted poem")
+
+                # Allow correction of OCR or extraction mistakes.
                 poem_text = st.text_area(
                     "Review and correct the poem if necessary:",
+                    value=poem_text,
                     height=250,
                     key="reviewed_poem_text"
                 )
 
             except Exception as error:
                 st.error(str(error))
-
-        else:
-            st.session_state["active_poem_file_id"] = ""
-            st.session_state["reviewed_poem_text"] = ""
 
     if st.button(
         "📚 Explain Poem in Simple Tamil",
@@ -794,78 +635,29 @@ Important rules:
                         max_tokens=3500
                     )
 
-                st.session_state["latest_poem_text"] = poem_text
-                st.session_state["poem_explanation"] = explanation
+                st.success("Poem explanation is ready!")
 
-                st.session_state["history"].insert(
-                    0,
-                    {
-                        "original": f"Poem: {poem_title or 'Untitled'}\n{poem_text}",
-                        "simplified": explanation
-                    }
+                st.markdown("## 📜 Original Poem")
+
+                if poem_title.strip():
+                    st.markdown(f"**{poem_title}**")
+
+                if poem_author.strip():
+                    st.caption(f"Poet: {poem_author}")
+
+                st.text_area(
+                    "Final poem text",
+                    value=poem_text,
+                    height=200,
+                    key="final_poem_display"
                 )
 
-                st.success("Poem explanation is ready!")
+                st.markdown("## 🎓 Student-Friendly Explanation")
+
+                st.markdown(explanation)
 
             except Exception as error:
                 st.error(str(error))
-
-    if st.session_state["poem_explanation"]:
-
-        st.markdown("## 📜 Original Poem")
-
-        if poem_title.strip():
-            st.markdown(f"**{poem_title}**")
-
-        if poem_author.strip():
-            st.caption(f"Poet: {poem_author}")
-
-        st.text_area(
-            "Final poem text",
-            value=st.session_state["latest_poem_text"],
-            height=200,
-            key="final_poem_display"
-        )
-
-        st.markdown("## 🎓 Student-Friendly Explanation")
-        st.markdown(st.session_state["poem_explanation"])
-
-
-# =====================================================
-# TAB 3: HISTORY
-# =====================================================
-
-with history_tab:
-
-    st.header("🕘 History")
-
-    st.write(
-        "Your recent text simplifications and poem explanations "
-        "are stored during this app session."
-    )
-
-    if st.button("🗑️ Clear History", key="clear_history_button"):
-
-        st.session_state["history"] = []
-        st.success("History cleared.")
-
-    if not st.session_state["history"]:
-
-        st.info("No history yet. Simplify a text or explain a poem first.")
-
-    else:
-
-        for index, item in enumerate(st.session_state["history"]):
-
-            with st.expander(
-                f"History {index + 1}"
-            ):
-
-                st.markdown("**Original Text / Poem**")
-                st.text(item["original"])
-
-                st.markdown("**Simplified Text / Explanation**")
-                st.text(item["simplified"])
 
 
 # =====================================================
