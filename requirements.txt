@@ -3,6 +3,8 @@ streamlit
 requests
 pypdf
 python-docx
+pillow
+pytesseract
 
 
 
