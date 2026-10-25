@@ -1,10 +1,9 @@
 
 streamlit
 requests
-pillow
-pytesseract
 pypdf
 python-docx
+
 
 
 
